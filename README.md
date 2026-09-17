@@ -12,8 +12,10 @@ from mainnet block 9,100.
 
 Download the latest release, install the OpenCL driver supplied by your GPU
 vendor, and list the devices visible to the miner. Official release archives
-currently target Linux x86-64 and ARM64. Windows and macOS users can build the
-same source with a C compiler and the platform OpenCL development files.
+target Linux x86-64, Linux ARM64 and Windows x86-64. macOS users can build the
+same source with a C compiler and the platform OpenCL development files. The
+Windows archive needs no separate installer; the GPU vendor's driver supplies
+the required `OpenCL.dll`.
 
 ```text
 qday-gominer -list

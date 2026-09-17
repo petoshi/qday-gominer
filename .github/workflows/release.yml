@@ -14,9 +14,14 @@ jobs:
       matrix:
         include:
           - runner: ubuntu-24.04
+            os: linux
             arch: amd64
           - runner: ubuntu-24.04-arm
+            os: linux
             arch: arm64
+          - runner: ubuntu-24.04
+            os: windows
+            arch: amd64
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -24,10 +29,17 @@ jobs:
         with:
           go-version-file: go.mod
       - name: Install OpenCL development files
+        if: matrix.os == 'linux'
         run: sudo apt-get update && sudo apt-get install -y ocl-icd-opencl-dev
+      - name: Install Windows cross compiler
+        if: matrix.os == 'windows'
+        run: sudo apt-get update && sudo apt-get install -y gcc-mingw-w64-x86-64
       - run: go mod verify
-      - run: go test ./...
-      - name: Build archive
+      - name: Test
+        if: matrix.os == 'linux'
+        run: go test ./...
+      - name: Build Linux archive
+        if: matrix.os == 'linux'
         env:
           RELEASE_TAG: ${{ github.ref_name }}
           RELEASE_ARCH: ${{ matrix.arch }}
@@ -39,10 +51,32 @@ jobs:
           go build -trimpath -ldflags="-s -w -X main.Version=${version}" -o "$package/qday-gominer" .
           cp README.md LICENSE "$package/"
           tar -czf "${package}.tar.gz" "$package"
+      - name: Build Windows archive
+        if: matrix.os == 'windows'
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -eu
+          version="${RELEASE_TAG#v}"
+          package="qday-gominer-${version}-windows-amd64"
+          mkdir -p "$package" build/windows
+          x86_64-w64-mingw32-dlltool \
+            -D OpenCL.dll \
+            -d scripts/OpenCL.def \
+            -l build/windows/libOpenCL.a
+          CGO_ENABLED=1 GOOS=windows GOARCH=amd64 \
+            CC=x86_64-w64-mingw32-gcc \
+            CGO_LDFLAGS="-L${PWD}/build/windows" \
+            go build -trimpath -ldflags="-s -w -X main.Version=${version}" \
+              -o "$package/qday-gominer.exe" .
+          cp README.md LICENSE "$package/"
+          zip -qr "${package}.zip" "$package"
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: qday-gominer-linux-${{ matrix.arch }}
-          path: qday-gominer-*.tar.gz
+          name: qday-gominer-${{ matrix.os }}-${{ matrix.arch }}
+          path: |
+            qday-gominer-*.tar.gz
+            qday-gominer-*.zip
           if-no-files-found: error
 
   publish:
@@ -56,7 +90,7 @@ jobs:
           fetch-depth: 0
       - uses: actions/download-artifact@95815c38cf2ff2164869cbab79da8d1f422bc89e # v8
         with:
-          pattern: qday-gominer-linux-*
+          pattern: qday-gominer-*
           path: artifacts
           merge-multiple: true
       - name: Publish release
@@ -66,6 +100,6 @@ jobs:
         run: |
           set -eu
           cd artifacts
-          sha256sum qday-gominer-*.tar.gz > SHA256SUMS
-          gh release create "$RELEASE_TAG" qday-gominer-*.tar.gz SHA256SUMS \
+          sha256sum qday-gominer-*.tar.gz qday-gominer-*.zip > SHA256SUMS
+          gh release create "$RELEASE_TAG" qday-gominer-*.tar.gz qday-gominer-*.zip SHA256SUMS \
             --verify-tag --notes-from-tag --title "QDAY gominer ${RELEASE_TAG}"
