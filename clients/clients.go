@@ -1,20 +1,20 @@
-//Package clients provides some utilities and common code for specific client implementations
+// Package clients provides some utilities and common code for specific client implementations
 package clients
 
-//HeaderReporter defines the required method a SIA client or pool client should implement for miners to be able to report solved headers
+// HeaderReporter defines the required method a SIA client or pool client should implement for miners to be able to report solved headers
 type HeaderReporter interface {
 	//SubmitHeader reports a solved header
 	SubmitHeader(header []byte, job interface{}) (err error)
 }
 
-//HeaderProvider supplies headers for a miner to mine on
+// HeaderProvider supplies headers for a miner to mine on
 type HeaderProvider interface {
 	//GetHeaderForWork providers a header to mine on
 	// the deprecationChannel is closed when the job should be abandoned
 	GetHeaderForWork() (target, header []byte, deprecationChannel chan bool, job interface{}, err error)
 }
 
-//DeprecatedJobCall is a function that can be registered on a client to be executed when
+// DeprecatedJobCall is a function that can be registered on a client to be executed when
 // the server indicates that all previous jobs should be abandoned
 type DeprecatedJobCall func()
 
@@ -29,14 +29,14 @@ type Client interface {
 	SetDeprecatedJobCall(call DeprecatedJobCall)
 }
 
-//BaseClient implements some common properties and functionality
+// BaseClient implements some common properties and functionality
 type BaseClient struct {
 	deprecationChannels map[string]chan bool
 
 	deprecatedJobCall DeprecatedJobCall
 }
 
-//DeprecateOutstandingJobs closes all deprecationChannels and removes them from the list
+// DeprecateOutstandingJobs closes all deprecationChannels and removes them from the list
 // This method is not threadsafe
 func (sc *BaseClient) DeprecateOutstandingJobs() {
 	if sc.deprecationChannels == nil {
@@ -62,7 +62,7 @@ func (sc *BaseClient) GetDeprecationChannel(jobid string) chan bool {
 	return sc.deprecationChannels[jobid]
 }
 
-//SetDeprecatedJobCall sets the function to be called when the previous jobs should be abandoned
+// SetDeprecatedJobCall sets the function to be called when the previous jobs should be abandoned
 func (sc *BaseClient) SetDeprecatedJobCall(call DeprecatedJobCall) {
 	sc.deprecatedJobCall = call
 }

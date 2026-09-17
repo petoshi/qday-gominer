@@ -2,12 +2,13 @@ package sia
 
 import (
 	"bytes"
+	"encoding/binary"
 	"log"
 	"math"
 	"testing"
 
+	"github.com/petoshi/qday-gominer/mining"
 	"github.com/robvanmieghem/go-opencl/cl"
-	"github.com/robvanmieghem/gominer/mining"
 )
 
 var provenSolutions = []struct {
@@ -39,25 +40,31 @@ var provenSolutions = []struct {
 func TestMine(t *testing.T) {
 	platforms, err := cl.GetPlatforms()
 	if err != nil {
-		log.Panic(err)
+		t.Skipf("OpenCL runtime unavailable: %v", err)
 	}
 
 	var clDevice *cl.Device
 	for _, platform := range platforms {
-		platormDevices, err := cl.GetDevices(platform, cl.DeviceTypeGPU)
+		platormDevices, err := cl.GetDevices(platform, cl.DeviceTypeAll)
 		if err != nil {
-			log.Fatalln(err)
+			continue
 		}
 		for _, device := range platormDevices {
 			log.Println(device.Type(), "-", device.Name())
 			clDevice = device
 		}
 	}
+	if clDevice == nil {
+		t.Skip("no OpenCL device available")
+	}
 
 	workChannel := make(chan *miningWork, len(provenSolutions)+1)
 
+	const workSize = 4096
 	for _, provenSolution := range provenSolutions {
-		workChannel <- &miningWork{provenSolution.workHeader, provenSolution.offset, nil}
+		nonce := int(binary.LittleEndian.Uint32(provenSolution.submittedHeader[32:36]))
+		offset := nonce - nonce%workSize
+		workChannel <- &miningWork{provenSolution.workHeader, offset, nil}
 	}
 	close(workChannel)
 	var hashRateReportsChannel = make(chan *mining.HashRateReport, len(provenSolutions)+1)
@@ -66,7 +73,7 @@ func TestMine(t *testing.T) {
 		ClDevice:          clDevice,
 		MinerID:           0,
 		HashRateReports:   hashRateReportsChannel,
-		GlobalItemSize:    int(math.Exp2(float64(28))),
+		GlobalItemSize:    workSize,
 		miningWorkChannel: workChannel,
 		Client:            validator,
 	}
@@ -84,7 +91,7 @@ type submittedHeaderValidator struct {
 	submittedHeaders chan []byte
 }
 
-//SubmitHeader stores solved so they can later be validated after the testrun
+// SubmitHeader stores solved so they can later be validated after the testrun
 func (v *submittedHeaderValidator) SubmitHeader(header []byte, job interface{}) (err error) {
 	v.submittedHeaders <- header
 	return

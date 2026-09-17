@@ -4,12 +4,12 @@ import (
 	"log"
 	"time"
 
+	"github.com/petoshi/qday-gominer/clients"
+	"github.com/petoshi/qday-gominer/mining"
 	"github.com/robvanmieghem/go-opencl/cl"
-	"github.com/robvanmieghem/gominer/clients"
-	"github.com/robvanmieghem/gominer/mining"
 )
 
-//miningWork is sent to the mining routines and defines what ranges should be searched for a matching nonce
+// miningWork is sent to the mining routines and defines what ranges should be searched for a matching nonce
 type miningWork struct {
 	Header []byte
 	Offset int
@@ -27,7 +27,7 @@ type Miner struct {
 	Client         clients.Client
 }
 
-//singleDeviceMiner actually mines on 1 opencl device
+// singleDeviceMiner actually mines on 1 opencl device
 type singleDeviceMiner struct {
 	ClDevice          *cl.Device
 	MinerID           int
@@ -39,7 +39,7 @@ type singleDeviceMiner struct {
 	Client         clients.HeaderReporter
 }
 
-//Mine spawns a seperate miner for each device defined in the CLDevices and feeds it with work
+// Mine spawns a seperate miner for each device defined in the CLDevices and feeds it with work
 func (m *Miner) Mine() {
 
 	m.miningWorkChannel = make(chan *miningWork, len(m.ClDevices))
@@ -51,6 +51,7 @@ func (m *Miner) Mine() {
 			HashRateReports:   m.HashRateReports,
 			miningWorkChannel: m.miningWorkChannel,
 			GlobalItemSize:    m.GlobalItemSize,
+			Intensity:         m.Intensity,
 			Client:            m.Client,
 		}
 		go sdm.mine()
@@ -64,9 +65,12 @@ func (m *Miner) createWork() {
 	//Register a function to clear the generated work if a job gets deprecated.
 	// It does not matter if we clear too many, it is worse to work on a stale job.
 	m.Client.SetDeprecatedJobCall(func() {
-		numberOfWorkItemsToRemove := len(m.miningWorkChannel)
-		for i := 0; i <= numberOfWorkItemsToRemove; i++ {
-			<-m.miningWorkChannel
+		for {
+			select {
+			case <-m.miningWorkChannel:
+			default:
+				return
+			}
 		}
 	})
 
@@ -78,6 +82,11 @@ func (m *Miner) createWork() {
 		if err != nil {
 			log.Println("ERROR fetching work -", err)
 			time.Sleep(1000 * time.Millisecond)
+			continue
+		}
+		if len(target) < 8 || len(header) < 40 {
+			log.Println("ERROR work provider returned a short target or header")
+			time.Sleep(time.Second)
 			continue
 		}
 
@@ -96,7 +105,11 @@ func (m *Miner) createWork() {
 			default:
 			}
 
-			m.miningWorkChannel <- &miningWork{header, int(i) * m.GlobalItemSize, job}
+			select {
+			case m.miningWorkChannel <- &miningWork{header, int(i) * m.GlobalItemSize, job}:
+			case <-deprecationChannel:
+				break nonce32loop
+			}
 		}
 	}
 }
@@ -144,6 +157,12 @@ func (miner *singleDeviceMiner) mine() {
 	localItemSize, err := kernel.WorkGroupSize(miner.ClDevice)
 	if err != nil {
 		log.Fatalln(miner.MinerID, "- WorkGroupSize failed -", err)
+	}
+	if localItemSize > miner.GlobalItemSize {
+		localItemSize = miner.GlobalItemSize
+	}
+	for localItemSize > 1 && miner.GlobalItemSize%localItemSize != 0 {
+		localItemSize--
 	}
 
 	log.Println(miner.MinerID, "- Global item size:", miner.GlobalItemSize, "(Intensity", miner.Intensity, ")", "- Local item size:", localItemSize)

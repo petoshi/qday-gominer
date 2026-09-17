@@ -1,0 +1,6 @@
+github.com/robvanmieghem/go-opencl v0.0.0-20160201165807-5ca28f1a8220 h1:R6gXg1K/nHHHC6OuPs/ihsjPAzUzV+CUhNutnlfJd4I=
+github.com/robvanmieghem/go-opencl v0.0.0-20160201165807-5ca28f1a8220/go.mod h1:oRKEPoVHv/heaoigZ4scUqHaqy/z521i9uMRS6aRCCA=
+golang.org/x/crypto v0.54.0 h1:YLIA59K4fiNzHzjnZt2tUJQjQtUWfWbeHBqKtk3eScw=
+golang.org/x/crypto v0.54.0/go.mod h1:KWL8ny2AZdGR2cWmzeHrp2azQPGogOv+HeQaVEXC2dk=
+golang.org/x/sys v0.47.0 h1:o7XGOvZQCADBQQ4Y7VNq2dRWQR7JmOUW8Kxx4ZsNgWs=
+golang.org/x/sys v0.47.0/go.mod h1:4GL1E5IUh+htKOUEOaiffhrAeqysfVGipDYzABqnCmw=

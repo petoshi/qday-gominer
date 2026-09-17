@@ -8,13 +8,13 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/robvanmieghem/gominer/clients"
+	"github.com/petoshi/qday-gominer/clients"
 )
 
 // NewClient creates a new SiadClient given a '[stratum+tcp://]host:port' connectionstring
-func NewClient(connectionstring, pooluser string) (sc clients.Client) {
+func NewClient(connectionstring, pooluser, poolpassword string) (sc clients.Client) {
 	if strings.HasPrefix(connectionstring, "stratum+tcp://") {
-		sc = &StratumClient{connectionstring: strings.TrimPrefix(connectionstring, "stratum+tcp://"), User: pooluser}
+		sc = &StratumClient{connectionstring: strings.TrimPrefix(connectionstring, "stratum+tcp://"), User: pooluser, Password: poolpassword}
 	} else {
 		s := SiadClient{}
 		s.siadurl = "http://" + connectionstring + "/miner/header"
@@ -42,13 +42,13 @@ func decodeMessage(resp *http.Response) (msg string, err error) {
 	return
 }
 
-//Start does nothing
+// Start does nothing
 func (sc *SiadClient) Start() {}
 
-//SetDeprecatedJobCall does nothing
+// SetDeprecatedJobCall does nothing
 func (sc *SiadClient) SetDeprecatedJobCall(call clients.DeprecatedJobCall) {}
 
-//GetHeaderForWork fetches new work from the SIA daemon
+// GetHeaderForWork fetches new work from the SIA daemon
 func (sc *SiadClient) GetHeaderForWork() (target []byte, header []byte, deprecationChannel chan bool, job interface{}, err error) {
 	//the deprecationChannel is not used but return a valid channel anyway
 	deprecationChannel = make(chan bool)
@@ -96,7 +96,7 @@ func (sc *SiadClient) GetHeaderForWork() (target []byte, header []byte, deprecat
 	return
 }
 
-//SubmitHeader reports a solved header to the SIA daemon
+// SubmitHeader reports a solved header to the SIA daemon
 func (sc *SiadClient) SubmitHeader(header []byte, job interface{}) (err error) {
 	req, err := http.NewRequest("POST", sc.siadurl, bytes.NewReader(header))
 	if err != nil {

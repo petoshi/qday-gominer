@@ -1,88 +1,81 @@
-# gominer
-GPU miner for sia in go
+# QDAY gominer
 
-All available opencl capable GPU's are detected and used in parallel.
+OpenCL GPU miner for QDAY. This is the maintained QDAY fork of Rob Van
+Mieghem's Sia gominer, updated for current Go releases and QDAY's SiaMining
+Stratum protocol.
 
-## Binary releases
+It connects directly to the public pool, mines the native 80-byte
+BLAKE2b-256 work item and supports the QDAY v1 `4+4` extranonce format active
+from mainnet block 9,100.
 
-[Binaries for Windows and Linux are available in the corresponding releases](https://github.com/robvanmieghem/gominer/releases)
+## Run it
 
+Download the latest release, install the OpenCL driver supplied by your GPU
+vendor, and list the devices visible to the miner:
 
-## Installation from source
-
-### Prerequisites
-* go version 1.4.2 or above (earlier version might work or not), check with `go version`
-* opencl libraries on the library path
-* gcc
-
-```
-go get github.com/robvanmieghem/gominer
+```text
+qday-gominer -list
 ```
 
-## Run
-```
-gominer
-```
+Start mining. Replace the address and worker name:
 
-Usage:
-```
-  -url string
-    	siad host and port (default "localhost:9980")
-        for stratum servers, use `stratum+tcp://<host>:<port>`
-  -user string
-        username, most stratum servers take this in the form [payoutaddress].[rigname]
-        This is optional, if solo mining sia, this is not needed
-  -I int
-    	Intensity (default 28)
-  -E string
-        Exclude GPU's: comma separated list of devicenumbers
-  -cpu
-    	If set, also use the CPU for mining, only GPU's are used by default
-  -v	Show version and exit
+```text
+qday-gominer -url stratum+tcp://pool.pqday.com:3333 -user YOUR_QDAY_ADDRESS.rig1
 ```
 
-See what intensity gives you the best hashrate, increasing the intensity also increases the stale rate though.
-##EXAMPLES
-**poolmining:**
-`gominer -url stratum+tcp://siamining.com:3333 -I 28 -user 9afafe46fbd4d2fc3f6dd61ae36686a8ce3d9ddd84a8c8fa72dddb5fe09e6e61f2e2e60f974c.example`
-**solomining:**
-start siad with the miner module enabled and start gominer:
-`siad -M cghrtwm`
-`gominer`
+The password defaults to `x`. To request a fixed share difficulty from the
+QDAY pool:
 
-## Stratum support
+```text
+qday-gominer -user YOUR_QDAY_ADDRESS.rig1 -password d=0.01
+```
 
-Stratum support is implemented as defined on https://siamining.com/stratum
+Useful options:
 
-## Developer fee
+```text
+-I 28          OpenCL intensity; valid range 1 through 31
+-E 0,2         exclude device numbers 0 and 2
+-list          list OpenCL devices and exit
+-v             print the version and exit
+```
 
-A developer fee of 1% is created by submitting 1% of the shares for my address if using the stratum protocol. The code is open source so you can simply remove that line if you want to. To make it easy for you, the exact line is https://github.com/robvanmieghem/gominer/blob/master/algorithms/sia/siastratum.go#L307 if you do not want to support the gominer development.
+The miner reconnects automatically when the pool changes jobs or restarts.
+At the QDAY v1 activation boundary the pool deliberately reconnects every
+worker so the extranonce format cannot be mixed across consensus rules.
 
-## FAQ
-- ERROR fetching work - Status code 404
+There is no developer fee in this fork.
 
-  If you are solomining, make siad is running and the miner module is enabled in siad: `siad -M cghrtwm`
+## Build
 
-- ERROR fetching work - Get http://localhost:9980/miner/header: dial tcp 127.0.0.1:9980: connection refused
+Go 1.26, a C compiler, OpenCL headers and the vendor OpenCL runtime are
+required. On Debian or Ubuntu:
 
-  Make sure `siad` is running
+```text
+sudo apt install build-essential ocl-icd-opencl-dev
+go build -o qday-gominer .
+```
 
-- What is `siad`?
+The build can succeed with the generic OpenCL loader, but mining still needs a
+working NVIDIA, AMD or Intel OpenCL driver. `go test ./...` runs the protocol
+and known-header tests everywhere; the kernel test also runs when an OpenCL
+device is present.
 
-  Check the sia documentation
+## Protocol checks
 
-- I don't know how to set up siad or the sia UI wallet, how do I do that?
+The test suite verifies:
 
-  Check the sia documentation.
+- the exact stock Obelisk/Sia 80-byte header vector;
+- the QDAY v1 compact mining transaction and `4+4` extranonces;
+- difficulty and target conversion;
+- authorization, large Stratum messages, share submission and reconnect-safe
+  request handling;
+- known solved Sia BLAKE2b headers through the OpenCL kernel when hardware is
+  available.
 
-- You have to help me set up mining SIA
+Pool: <https://pool.pqday.com>
 
-  No I don't
+QDAY: <https://pqday.com>
 
-## Support development
+Source: <https://github.com/petoshi/qday-gominer>
 
-If you really want to, you can support the gominer development:
-
-SIA: 79b9089439218734192db7016f07dc5a0e2a95e873992dd782a1e1306b2c44e116e1d8ded910
-
-BTC: 1LYjTFXr4RfFT2gQkAswk5Juua7cnjVyMf
+The original gominer copyright and BSD license remain in [LICENSE](LICENSE).

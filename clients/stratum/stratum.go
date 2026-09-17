@@ -1,199 +1,261 @@
-//Package stratum implements the basic stratum protocol.
-// This is normal jsonrpc but the go standard library is insufficient since we need features like notifications.
+// Package stratum implements the newline-delimited JSON-RPC dialect used by
+// SiaMining Stratum servers.
 package stratum
 
 import (
 	"bufio"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"sync"
 	"time"
 )
 
-// request : A remote method is invoked by sending a request to the remote stratum service.
+const (
+	callTimeout     = 30 * time.Second
+	maxMessageBytes = 16 << 20
+)
+
 type request struct {
 	Method string   `json:"method"`
 	Params []string `json:"params"`
 	ID     uint64   `json:"id"`
 }
 
-// response is the stratum server's response on a Request
-// notification is an inline struct to easily decode messages in a response/notification using a json marshaller
 type response struct {
-	ID           uint64        `json:"id"`
-	Result       interface{}   `json:"result"`
-	Error        []interface{} `json:"error"`
-	notification `json:",inline"`
+	ID     uint64          `json:"id"`
+	Result json.RawMessage `json:"result"`
+	Error  json.RawMessage `json:"error"`
+	Method string          `json:"method"`
+	Params json.RawMessage `json:"params"`
 }
 
-// notification is a special kind of Request, it has no ID and is sent from the server to the client
-type notification struct {
-	Method string        `json:"method"`
-	Params []interface{} `json:"params"`
+type callResult struct {
+	value interface{}
+	err   error
 }
 
-//ErrorCallback is the type of function that be registered to be notified of errors requiring a client
-// to be dropped and a new one to be created
-type ErrorCallback func(err error)
+// ErrorCallback is called once when an established connection fails.
+type ErrorCallback func(error)
 
-//NotificationHandler is the signature for a function that handles notifications
-type NotificationHandler func(args []interface{})
+// NotificationHandler handles the decoded parameter array of a notification.
+type NotificationHandler func([]interface{})
 
-// Client maintains a connection to the stratum server and (de)serializes requests/reponses/notifications
+// Client owns one Stratum TCP connection. It is not reusable after Close.
 type Client struct {
 	socket net.Conn
 
-	seqmutex sync.Mutex // protects following
-	seq      uint64
+	writeMu sync.Mutex
+	seqMu   sync.Mutex
+	seq     uint64
 
-	callsMutex   sync.Mutex // protects following
-	pendingCalls map[uint64]chan interface{}
+	callsMu sync.Mutex
+	pending map[uint64]chan callResult
 
-	ErrorCallback        ErrorCallback
+	handlersMu           sync.RWMutex
 	notificationHandlers map[string]NotificationHandler
+
+	closeOnce sync.Once
+	errMu     sync.RWMutex
+	done      chan struct{}
+	closeErr  error
+
+	ErrorCallback ErrorCallback
 }
 
-//Dial connects to a stratum+tcp at the specified network address.
-// This function is not threadsafe
-// If an error occurs, it is both returned here and through the ErrorCallback of the Client
-func (c *Client) Dial(host string) (err error) {
-	c.socket, err = net.Dial("tcp", host)
+// Dial connects to host and starts the response reader.
+func (c *Client) Dial(host string) error {
+	conn, err := net.DialTimeout("tcp", host, 10*time.Second)
 	if err != nil {
-		c.dispatchError(err)
-		return
+		return err
 	}
-	go c.Listen()
-	return
+	c.socket = conn
+	c.pending = make(map[uint64]chan callResult)
+	c.done = make(chan struct{})
+	go c.listen()
+	return nil
 }
 
-//Close releases the tcp connection
+// Close releases the connection and wakes all pending calls.
 func (c *Client) Close() {
-	if c.socket != nil {
-		c.socket.Close()
-	}
+	c.fail(net.ErrClosed)
 }
 
-//SetNotificationHandler registers a function to handle notification for a specific method.
-// This function is not threadsafe and all notificationhandlers should be set prior to calling the Dial function
+// Done is closed when the connection stops.
+func (c *Client) Done() <-chan struct{} {
+	return c.done
+}
+
+// Err returns the error that stopped the connection.
+func (c *Client) Err() error {
+	c.errMu.RLock()
+	defer c.errMu.RUnlock()
+	return c.closeErr
+}
+
+// SetNotificationHandler registers a handler before Dial is called.
 func (c *Client) SetNotificationHandler(method string, handler NotificationHandler) {
+	c.handlersMu.Lock()
+	defer c.handlersMu.Unlock()
 	if c.notificationHandlers == nil {
 		c.notificationHandlers = make(map[string]NotificationHandler)
 	}
 	c.notificationHandlers[method] = handler
 }
 
-func (c *Client) dispatchNotification(n notification) {
-	if c.notificationHandlers == nil {
-		return
-	}
-	if notificationHandler, exists := c.notificationHandlers[n.Method]; exists {
-		notificationHandler(n.Params)
-	}
-}
-
-func (c *Client) dispatch(r response) {
-	if r.ID == 0 {
-		c.dispatchNotification(r.notification)
-		return
-	}
-	c.callsMutex.Lock()
-	defer c.callsMutex.Unlock()
-	cb, found := c.pendingCalls[r.ID]
-	var result interface{}
-	if r.Error != nil {
-		message := ""
-		if len(r.Error) >= 2 {
-			message, _ = r.Error[1].(string)
-		}
-		result = errors.New(message)
-	} else {
-		result = r.Result
-	}
-	if found {
-		cb <- result
-	}
-}
-
-func (c *Client) dispatchError(err error) {
-	if c.ErrorCallback != nil {
-		c.ErrorCallback(err)
-	}
-}
-
-//Listen reads data from the open connection, deserializes it and dispatches the reponses and notifications
-// This is a blocking function and will continue to listen until an error occurs (io or deserialization)
-func (c *Client) Listen() {
-	reader := bufio.NewReader(c.socket)
-	for {
-		rawmessage, err := reader.ReadString('\n')
-		if err != nil {
-			c.dispatchError(err)
-			return
-		}
-		r := response{}
-		err = json.Unmarshal([]byte(rawmessage), &r)
-		if err != nil {
-			c.dispatchError(err)
-			return
-		}
-		c.dispatch(r)
-	}
-}
-
-func (c *Client) registerRequest(requestID uint64) (cb chan interface{}) {
-	c.callsMutex.Lock()
-	defer c.callsMutex.Unlock()
-	if c.pendingCalls == nil {
-		c.pendingCalls = make(map[uint64]chan interface{})
-	}
-	cb = make(chan interface{})
-	c.pendingCalls[requestID] = cb
-	return
-}
-
-func (c *Client) cancelRequest(requestID uint64) {
-	c.callsMutex.Lock()
-	defer c.callsMutex.Unlock()
-	cb, found := c.pendingCalls[requestID]
-	if found {
-		close(cb)
-		delete(c.pendingCalls, requestID)
-	}
-}
-
-//Call invokes the named function, waits for it to complete, and returns its error status.
-func (c *Client) Call(serviceMethod string, args []string) (reply interface{}, err error) {
-	r := request{Method: serviceMethod, Params: args}
-
-	c.seqmutex.Lock()
+func (c *Client) nextID() uint64 {
+	c.seqMu.Lock()
+	defer c.seqMu.Unlock()
 	c.seq++
-	r.ID = c.seq
-	c.seqmutex.Unlock()
+	return c.seq
+}
 
-	rawmsg, err := json.Marshal(r)
-	if err != nil {
+func (c *Client) listen() {
+	scanner := bufio.NewScanner(c.socket)
+	scanner.Buffer(make([]byte, 64<<10), maxMessageBytes)
+	for scanner.Scan() {
+		raw := scanner.Bytes()
+		var message response
+		if err := json.Unmarshal(raw, &message); err != nil {
+			c.fail(fmt.Errorf("decode Stratum message: %w", err))
+			return
+		}
+		if message.Method != "" {
+			c.dispatchNotification(message)
+			continue
+		}
+		c.dispatchResponse(message)
+	}
+	if err := scanner.Err(); err != nil {
+		c.fail(fmt.Errorf("read Stratum message: %w", err))
+	} else {
+		c.fail(errors.New("Stratum server closed the connection"))
+	}
+}
+
+func (c *Client) dispatchNotification(message response) {
+	var params []interface{}
+	if len(message.Params) != 0 && string(message.Params) != "null" {
+		if err := json.Unmarshal(message.Params, &params); err != nil {
+			c.fail(fmt.Errorf("decode %s notification: %w", message.Method, err))
+			return
+		}
+	}
+	c.handlersMu.RLock()
+	handler := c.notificationHandlers[message.Method]
+	c.handlersMu.RUnlock()
+	if handler != nil {
+		handler(params)
+	}
+}
+
+func (c *Client) dispatchResponse(message response) {
+	c.callsMu.Lock()
+	call := c.pending[message.ID]
+	delete(c.pending, message.ID)
+	c.callsMu.Unlock()
+	if call == nil {
 		return
 	}
-	call := c.registerRequest(r.ID)
-	defer c.cancelRequest(r.ID)
-
-	rawmsg = append(rawmsg, []byte("\n")...)
-	_, err = c.socket.Write(rawmsg)
-	if err != nil {
+	if err := decodeRPCError(message.Error); err != nil {
+		call <- callResult{err: err}
 		return
 	}
-	//Make sure the request is cancelled if no response is given
-	go func() {
-		time.Sleep(10 * time.Second)
-		c.cancelRequest(r.ID)
+	var result interface{}
+	if len(message.Result) != 0 {
+		if err := json.Unmarshal(message.Result, &result); err != nil {
+			call <- callResult{err: fmt.Errorf("decode Stratum result: %w", err)}
+			return
+		}
+	}
+	call <- callResult{value: result}
+}
+
+func decodeRPCError(raw json.RawMessage) error {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil
+	}
+	var fields []interface{}
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return fmt.Errorf("Stratum error: %s", raw)
+	}
+	if len(fields) >= 2 {
+		if message, ok := fields[1].(string); ok && message != "" {
+			return errors.New(message)
+		}
+	}
+	return fmt.Errorf("Stratum error: %s", raw)
+}
+
+func (c *Client) fail(err error) {
+	c.closeOnce.Do(func() {
+		c.errMu.Lock()
+		c.closeErr = err
+		c.errMu.Unlock()
+		if c.socket != nil {
+			_ = c.socket.Close()
+		}
+		if c.done != nil {
+			close(c.done)
+		}
+
+		c.callsMu.Lock()
+		pending := c.pending
+		c.pending = make(map[uint64]chan callResult)
+		c.callsMu.Unlock()
+		for _, call := range pending {
+			call <- callResult{err: err}
+		}
+
+		if c.ErrorCallback != nil && !errors.Is(err, net.ErrClosed) {
+			go c.ErrorCallback(err)
+		}
+	})
+}
+
+// Call invokes a Stratum method and waits up to 30 seconds for its response.
+func (c *Client) Call(serviceMethod string, args []string) (interface{}, error) {
+	if c.socket == nil || c.done == nil {
+		return nil, errors.New("Stratum client is not connected")
+	}
+	id := c.nextID()
+	call := make(chan callResult, 1)
+	c.callsMu.Lock()
+	c.pending[id] = call
+	c.callsMu.Unlock()
+	defer func() {
+		c.callsMu.Lock()
+		delete(c.pending, id)
+		c.callsMu.Unlock()
 	}()
-	reply = <-call
 
-	if reply == nil {
-		err = errors.New("Timeout")
-		return
+	payload, err := json.Marshal(request{Method: serviceMethod, Params: args, ID: id})
+	if err != nil {
+		return nil, err
 	}
-	err, _ = reply.(error)
-	return
+	payload = append(payload, '\n')
+	c.writeMu.Lock()
+	_ = c.socket.SetWriteDeadline(time.Now().Add(callTimeout))
+	_, err = c.socket.Write(payload)
+	_ = c.socket.SetWriteDeadline(time.Time{})
+	c.writeMu.Unlock()
+	if err != nil {
+		c.fail(err)
+		return nil, err
+	}
+
+	timer := time.NewTimer(callTimeout)
+	defer timer.Stop()
+	select {
+	case result := <-call:
+		return result.value, result.err
+	case <-timer.C:
+		return nil, fmt.Errorf("%s timed out after %s", serviceMethod, callTimeout)
+	case <-c.done:
+		if err := c.Err(); err != nil {
+			return nil, err
+		}
+		return nil, net.ErrClosed
+	}
 }
