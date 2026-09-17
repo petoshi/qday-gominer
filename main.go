@@ -48,25 +48,25 @@ func main() {
 
 	platforms, err := cl.GetPlatforms()
 	if err != nil {
-		log.Panic(err)
+		log.Fatalf("OpenCL runtime unavailable. Install the GPU vendor's OpenCL driver and try again: %v", err)
 	}
 
 	clDevices := make([]*cl.Device, 0, 4)
 	for _, platform := range platforms {
 		log.Println("Platform", platform.Name())
-		platormDevices, err := cl.GetDevices(platform, devicesTypesForMining)
+		platformDevices, err := cl.GetDevices(platform, devicesTypesForMining)
 		if err != nil {
 			log.Println(err)
 		}
-		log.Println(len(platormDevices), "device(s) found:")
-		for i, device := range platormDevices {
+		log.Println(len(platformDevices), "device(s) found:")
+		for i, device := range platformDevices {
 			log.Println(i, "-", device.Type(), "-", device.Name())
 			clDevices = append(clDevices, device)
 		}
 	}
 
 	if len(clDevices) == 0 {
-		log.Println("No suitable opencl devices found")
+		log.Println("No suitable OpenCL devices found")
 		os.Exit(1)
 	}
 	if *listDevices {
